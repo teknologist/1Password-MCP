@@ -189,7 +189,7 @@ describe("Safe tools through MCP with a fake SDK", () => {
     let failure: unknown;
     if (format === "hostile-error") {
       failure = Object.defineProperties(new Error(), {
-        message: { get: inspect }, stack: { get: inspect }, cause: { get: inspect },
+        stack: { get: inspect }, message: { get: inspect }, cause: { get: inspect },
       });
     } else if (format === "hostile-object") {
       failure = { get message() { return inspect(); }, get stack() { return inspect(); }, get cause() { return inspect(); }, toString: inspect };
