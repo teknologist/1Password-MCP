@@ -1,6 +1,6 @@
 {
   "name": "@takescake/1password-mcp",
-  "version": "5.1.0",
+  "version": "5.2.0",
   "private": false,
   "type": "module",
   "description": "Security-first MCP server for 1Password — vault/item tools, prompts, resources, and op_run secret injection (MCP 2026-07-28)",
@@ -64,6 +64,6 @@
     "@modelcontextprotocol/client": "^2.4.0",
     "@types/node": "^22.0.0",
     "typescript": "^5.7.0",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   }
 }

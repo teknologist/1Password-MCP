@@ -162,7 +162,7 @@ describe("vault allow-list enforcement", () => {
           vaultId: params.vaultId,
           category: params.category,
           tags: [],
-          fields: [],
+          fields: params.fields ?? [],
         })),
         delete: vi.fn().mockResolvedValue(undefined),
         archive: vi.fn().mockResolvedValue(undefined),
@@ -240,7 +240,9 @@ describe("vault allow-list enforcement", () => {
       const result = await call(tool, args(PROD.id));
 
       expect(result.isError).toBe(true);
-      expect(result.content[0].text).toContain("vault listing unavailable");
+      const safeWrite = tool === "item_edit" || tool === "password_create" || tool === "password_update";
+      expect(result.content[0].text).toContain(safeWrite ? "vault access verification failed" : "vault listing unavailable");
+      if (safeWrite) expect(result.content[0].text).not.toContain("vault listing unavailable");
       expectNoSdkOperations(client);
     });
 

@@ -4,20 +4,22 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import * as sdk from "@1password/sdk";
+import { generationOptions, storedPassword, passwordReference, passwordError, PASSWORD_REFERENCE_WARNING } from "../password-generation.js";
 import { getClient } from "../client.js";
 import { log, logError } from "../logger.js";
 import { jsonResult, errorResult } from "../utils.js";
 import { assertVaultIdAllowed } from "../vault-access.js";
 
 export function registerPasswordCreate(server: McpServer): void {
-  server.registerTool("password_create", { description: "Create a new password/login item in a 1Password vault with optional username, URL, tags, and notes.", inputSchema: z.object({
+  server.registerTool("password_create", { description: "Create a password/login item. Supply exactly one password or generate options. Generation and storage use one server call. Returns an ID-based secret reference when saved metadata permits; otherwise returns a successful write with a warning and no reference. SDK failures use fixed safe messages; check item metadata before retrying. Hides the password unless returnSecret is true.", inputSchema: z.object({
               vaultId: z.string().min(1).describe("Vault ID to create the item in."),
               title: z.string().min(1).describe("Item title."),
               username: z
                 .string()
                 .optional()
                 .describe("Username to store in the item."),
-              password: z.string().min(1).describe("Password to store in the item."),
+              password: z.string().min(1).optional().describe("Explicit password. Supply this or generate, not both."),
+              generate: generationOptions.optional().describe("Generate and store a password internally. Supply this or password, not both."),
               category: z
                 .enum(["Login", "Password"])
                 .optional()
@@ -43,28 +45,32 @@ export function registerPasswordCreate(server: McpServer): void {
               title,
               username,
               password,
+              generate,
               category,
               tags,
               notes,
               url,
               returnSecret,
             }) => {
+              if ((password === undefined) === (generate === undefined)) {
+                return errorResult(new Error("Supply exactly one explicit password value or generate options."));
+              }
               try {
+                const secret = storedPassword(password, generate);
                 log("debug", "Tool call: password_create.", { vaultId, title });
                 const client = await getClient();
-                await assertVaultIdAllowed(client, vaultId);
+                try {
+                  await assertVaultIdAllowed(client, vaultId);
+                } catch {
+                  const safeError = new Error(`Vault '${vaultId}' is not in the allowed vault list, or vault access verification failed.`);
+                  logError("password_create failed.", safeError);
+                  return errorResult(safeError);
+                }
                 if (!client?.items?.create) {
-                  throw new Error(
-                    "Your @1password/sdk version does not support creating items.",
-                  );
+                  return errorResult(new Error("Your @1password/sdk version does not support creating items."));
                 }
 
-                const fields: Array<{
-                  id: string;
-                  title: string;
-                  fieldType: string;
-                  value: string;
-                }> = [];
+                const fields: sdk.ItemField[] = [];
 
                 if (username) {
                   fields.push({
@@ -79,7 +85,7 @@ export function registerPasswordCreate(server: McpServer): void {
                   id: "password",
                   title: "password",
                   fieldType: sdk.ItemFieldType.Concealed,
-                  value: password,
+                  value: secret,
                 });
 
                 const categoryEnum =
@@ -94,24 +100,33 @@ export function registerPasswordCreate(server: McpServer): void {
                   fields,
                   tags,
                   notes,
-                  websites: url ? [{ url }] : undefined,
-                } as any);
+                  websites: url ? [{ url, label: "website", autofillBehavior: sdk.AutofillBehavior.AnywhereOnWebsite }] : undefined,
+                });
 
                 const response: Record<string, unknown> = {
                   id: item.id,
                   title: item.title,
-                  vaultId: (item as any).vaultId ?? vaultId,
+                  vaultId: item.vaultId ?? vaultId,
                   category: item.category,
                 };
 
+                try {
+                  const savedFields = Array.isArray(item.fields) ? item.fields.filter((field) => field?.id === "password") : [];
+                  const reference = passwordReference(item, savedFields.length === 1 ? savedFields[0] : undefined);
+                  if (reference) response.secretReference = reference;
+                  else response.warning = PASSWORD_REFERENCE_WARNING;
+                } catch {
+                  response.warning = PASSWORD_REFERENCE_WARNING;
+                }
                 if (returnSecret) {
-                  response.password = password;
+                  response.password = secret;
                 }
 
                 return jsonResult(response);
-              } catch (error) {
-                logError("password_create failed.", error);
-                return errorResult(error);
+              } catch {
+                const safeError = passwordError("create");
+                logError("password_create failed.", safeError);
+                return errorResult(safeError);
               }
             });
 }

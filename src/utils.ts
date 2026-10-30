@@ -58,7 +58,7 @@ export function buildCharset(options: {
   return charset;
 }
 
-// ─── Memorable Password Word Lists (EFF-inspired, ~500 words) ────────
+// ─── Memorable Password Word Lists (402 distinct words) ─────────────
 
 export const WORD_LISTS = {
   nouns: [

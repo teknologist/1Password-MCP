@@ -8,13 +8,16 @@ import { getClient } from "../client.js";
 import { log, logError } from "../logger.js";
 import { jsonResult, errorResult } from "../utils.js";
 import { assertVaultIdAllowed } from "../vault-access.js";
+import { pageOptions, pageOffset, localPage } from "../item-pagination.js";
 
 export function registerItemList(server: McpServer): void {
-  server.registerTool("item_list", { description: "List all items in a 1Password vault, returning id, title, category, tags, and updatedAt for each. Never returns secret values.", inputSchema: z.object({
+  server.registerTool("item_list", { description: "List item metadata without secret values. Supports exact tag filtering and local pages in title/ID order. Pages bound response size, not SDK fetch cost; vault changes can skip or repeat items. Without page inputs, preserves the legacy response and order.", inputSchema: z.object({
               vaultId: z.string().min(1).describe("Vault ID to list items from."),
-            }) }, async ({ vaultId }) => {
+              ...pageOptions,
+            }) }, async ({ vaultId, tag, pageSize, cursor }) => {
               try {
                 log("debug", "Tool call: item_list.", { vaultId });
+                const position = pageOffset(cursor, ["item_list", vaultId, tag ?? null]);
                 const client = await getClient();
                 await assertVaultIdAllowed(client, vaultId);
                 if (!client?.items?.list) {
@@ -24,7 +27,8 @@ export function registerItemList(server: McpServer): void {
                 }
 
                 const items: ItemOverview[] = await client.items.list(vaultId);
-                const summary = (items ?? []).map((item) => ({
+                const page = localPage(items ?? [], { tag, pageSize, cursor }, position);
+                const summary = page.items.map((item) => ({
                   id: item.id,
                   title: item.title,
                   category: item.category,
@@ -32,7 +36,7 @@ export function registerItemList(server: McpServer): void {
                   updatedAt: item.updatedAt,
                 }));
 
-                return jsonResult({ items: summary, count: summary.length });
+                return jsonResult({ items: summary, count: summary.length, ...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {}) });
               } catch (error) {
                 logError("item_list failed.", error);
                 return errorResult(error);

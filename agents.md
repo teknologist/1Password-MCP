@@ -80,8 +80,12 @@ When tools, prompts, or resources change, update **README.md** (npm’s face), *
 ## Agent security conventions
 
 - Prefer `op_run` + `op://` over `reveal: true`.
-- Prefer `op_check_ref` over revealing just to validate a path.
-- Default create/update responses should not echo secrets (`returnSecret` / `reveal` opt-in).
+- Prefer `op_check_ref` over revealing just to validate a path. It supports `op://vault/item/field` and `op://vault/item/section/field`; select the section before the field. Keep encoded and query text literal. Use `item_get` with `reveal: false` to discover field and section metadata; do not display values or notes.
+- Default create/update responses should not echo secrets (`returnSecret` / `reveal` opt-in). Prefer `password_create` / `password_update` with `generate` for one-call generation and storage. Supply exactly one explicit value or generation request. Use returned ID-based references when present. If a successful write returns a fixed warning without a reference, inspect metadata; do not repeat the write. SDK failures log and return fixed safe messages, not the SDK exception; check metadata before retrying because the write outcome may be unknown. Preserve local validation diagnostics with explicit boundaries.
+- `item_edit` and `password_update` select exact IDs before unique case-insensitive IDs and titles. Reject ambiguity before writes. `password_update` converts the selected field to `Concealed` and retains its section and ID through the write and saved-response lookup. If IDs repeat across sections, use a unique title. Preserve fetched versions and do not retry failed writes. A live test with SDK `0.3.1` on 2026-10-30 confirms stale-version rejection; this is observed behavior, not a new server-side guarantee.
+- `item_edit` changes the first website URL only; preserve metadata, autofill restrictions, secondary entries, and order. No SDK primary designation is assumed.
+- Memorable defaults use seven words from 402 distinct words; only random choices contribute entropy. Ambiguous separators receive a sampling upper bound.
+- `item_list` / `item_lookup` support exact `tag` filters and local `pageSize` / `cursor` pages. Keep metadata allow-lists. Pages reduce response size, not SDK fetch cost; vault changes can skip or repeat items.
 - The vault allow-list is server-wide: any new tool or resource that touches a vault must go through `src/vault-access.ts` (`assertVaultIdAllowed` / `filterAllowedVaults`).
 - `op_run` redaction is best effort, not a sandbox: don't run untrusted commands with injected secrets.
 - `item_get` returns notes as-is, so don't store secrets in notes.

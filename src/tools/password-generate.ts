@@ -2,37 +2,15 @@
  * password_generate — Generate a cryptographically secure random password.
  */
 import type { McpServer } from "@modelcontextprotocol/server";
-import { z } from "zod";
+import { randomOptions, randomPassword } from "../password-generation.js";
 import { log, logError } from "../logger.js";
 import {
   jsonResult,
   errorResult,
-  generatePassword,
-  buildCharset,
 } from "../utils.js";
 
 export function registerPasswordGenerate(server: McpServer): void {
-  server.registerTool("password_generate", { description: "Generate a cryptographically secure random password with configurable length and character types. Uses rejection sampling for unbiased randomness.", inputSchema: z.object({
-              length: z
-                .number()
-                .int()
-                .min(8)
-                .max(128)
-                .optional()
-                .describe("Length of the password. Defaults to 20."),
-              includeSymbols: z
-                .boolean()
-                .optional()
-                .describe("Include symbols (!@#$%^&*…). Defaults to true."),
-              includeNumbers: z
-                .boolean()
-                .optional()
-                .describe("Include digits (0-9). Defaults to true."),
-              includeUppercase: z
-                .boolean()
-                .optional()
-                .describe("Include uppercase letters. Defaults to true."),
-            }) }, async ({
+  server.registerTool("password_generate", { description: "Generate a cryptographically secure random password with configurable length and character types. Uses rejection sampling for unbiased randomness.", inputSchema: randomOptions }, async ({
               length = 20,
               includeSymbols = true,
               includeNumbers = true,
@@ -46,12 +24,7 @@ export function registerPasswordGenerate(server: McpServer): void {
                   includeUppercase,
                 });
 
-                const charset = buildCharset({
-                  includeUppercase,
-                  includeNumbers,
-                  includeSymbols,
-                });
-                const password = generatePassword(length, charset);
+                const password = randomPassword({ length, includeUppercase, includeNumbers, includeSymbols });
 
                 return jsonResult({ password });
               } catch (error) {

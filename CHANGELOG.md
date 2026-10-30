@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.2.0] - 2026-10-30
+
+### Added
+
+- `password_create` and `password_update` accept optional random or memorable `generate` options. Supply exactly one explicit password value or generation request. Generation and storage use one server call. Responses include a saved ID-based `secretReference`, with a section ID when present, when saved metadata permits. A successful write with incomplete or ambiguous saved metadata returns a fixed warning and no reference; do not retry the write. Passwords remain hidden unless `returnSecret` is true.
+- `item_list` and `item_lookup` support exact metadata tag filtering and local `pageSize` / `cursor` pagination. Pages use title/ID order and validated, process-local cursors bound to tool, vault, query, tag, and lookup limit. Pagination bounds response size, not SDK fetch cost. Vault changes can skip or repeat items. Calls without page inputs retain their response shape and order.
+- Fake-SDK tests exercise these changes through a real MCP client, including secret-bearing SDK failures and metadata allow-lists.
+
+### Fixed
+
+- `item_edit` changes only the first website URL and preserves its label, autofill restrictions, secondary entries, and order. Omitted URL leaves websites unchanged. No SDK primary designation is assumed.
+- Shared field selection prioritizes exact IDs, then unique case-insensitive IDs, then unique titles (and legacy labels for `password_update`). Ambiguous updates and removals fail before a write. `item_edit` resolves operations against original fields and rejects conflicting operations.
+- `password_create`, `password_update`, and `item_edit` SDK failures log and return fixed operation-specific safe messages instead of SDK exception messages, stacks, causes, or raw properties. Local validation diagnostics remain available. Check item metadata before retrying an SDK failure because the write outcome may be unknown.
+- Secret references support exactly three or four nonempty segments, with the optional section parsed separately. `op_check_ref` matches the supplied section before the field and rejects ambiguity. Literal encoded and query text remain unchanged.
+- `password_update` retains the selected section and field ID through its single write. Unique titles can select fields whose IDs occur in different sections; ambiguous bare IDs still fail before a write.
+
+### Changed
+
+- Update development dependencies to Vitest `^4.1.12` and locked Vite `8.3.5` to fix the reported mock-registration, path-traversal, and development-server advisories. Runtime dependencies and `@1password/sdk` remain unchanged.
+- **Security change:** `password_update` converts the selected field to `Concealed` while preserving its other properties. Both update tools retain the fetched item version and do not retry failed writes. A live test with SDK `0.3.1` on 2026-10-30 confirms stale-version rejection and preservation of the newer write; this is observed SDK behavior, not an additional server-side guarantee.
+- Memorable generation defaults to seven words instead of three. The dictionary contains 402 distinct words (420 raw entries), not approximately 500. Seven words provide approximately 60.6 bits; default random suffixes increase the estimate to approximately 70.2 bits. Fixed capitalization and separators add no entropy. Ambiguous separators receive only a sampling upper bound. Explicit options remain available.
+- Creation and rotation prompts prefer server-side generate/store and ID-based references. They handle successful writes without references and fixed SDK failure messages. Reference discovery uses `item_get` with `reveal: false` for field and section metadata. Audit prompts use bounded pages. Updating 1Password does not rotate external service credentials atomically.
+
 ## [5.1.0] - 2026-10-19
 
 ### Fixed

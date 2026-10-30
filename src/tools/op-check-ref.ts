@@ -11,13 +11,14 @@ import { log, logError } from "../logger.js";
 import { jsonResult, errorResult } from "../utils.js";
 import { parseSecretRef, assertVaultAllowed } from "../secret-ref.js";
 import { assertVaultIdAllowed } from "../vault-access.js";
+import { selectFieldIndex } from "../field-selection.js";
 
 export function registerOpCheckRef(server: McpServer): void {
-  server.registerTool("op_check_ref", { description: "Validate an op://vault/item/field secret reference and return only non-secret metadata (vault name, item title, field label, field type) confirming it resolves — the field VALUE is never returned. Use this to check a reference is correct before using it with op_run; do not use password_read/item_get with reveal just to check a reference exists.", inputSchema: z.object({
+  server.registerTool("op_check_ref", { description: "Validate an op://vault/item/field or op://vault/item/section/field secret reference and return only non-secret metadata (vault name, item title, field label, field type) confirming it resolves — the field VALUE is never returned. Use this to check a reference is correct before using it with op_run; do not use password_read/item_get with reveal just to check a reference exists.", inputSchema: z.object({
               secretReference: z
                 .string()
                 .min(1)
-                .describe("Secret reference to validate, in op://vault/item/field format."),
+                .describe("Secret reference to validate: op://vault/item/field or op://vault/item/section/field."),
             }) }, async ({ secretReference }) => {
               try {
                 log("debug", "Tool call: op_check_ref.", { secretReference: true });
@@ -45,16 +46,24 @@ export function registerOpCheckRef(server: McpServer): void {
                 // The vault segment passed the textual pre-check above; also
                 // verify the vault the reference actually resolved to.
                 await assertVaultIdAllowed(client, vaultId);
-                const item: any = await client.items.get(vaultId, itemId);
+                const item = await client.items.get(vaultId, itemId);
 
-                const desiredField = ref.field.toLowerCase();
-                const fields: any[] = item.fields ?? [];
-                const match = fields.find((candidate: any) => {
-                  const idMatch = candidate.id?.toLowerCase() === desiredField;
-                  const titleMatch = candidate.title?.toLowerCase() === desiredField;
-                  const labelMatch = candidate.label?.toLowerCase() === desiredField;
-                  return idMatch || titleMatch || labelMatch;
-                });
+                let fields = item.fields ?? [];
+                if (ref.section !== undefined) {
+                  const section = ref.section;
+                  const sections = item.sections ?? [];
+                  const ids = [...new Set([...sections.map((entry) => entry.id), ...fields.map((entry) => entry.sectionId)].filter((id): id is string => !!id))];
+                  const exact = ids.filter((id) => id === section);
+                  const insensitive = ids.filter((id) => id.toLowerCase() === section.toLowerCase());
+                  const titles = sections.filter((entry) => entry.title?.toLowerCase() === section.toLowerCase()).map((entry) => entry.id);
+                  const matches = exact.length ? exact : insensitive.length ? insensitive : titles;
+                  if (matches.length !== 1) {
+                    throw new Error("Section not found or ambiguous on the resolved item.");
+                  }
+                  fields = fields.filter((entry) => entry.sectionId === matches[0]);
+                }
+                const index = selectFieldIndex(fields, ref.field, true);
+                const match = fields[index];
 
                 if (!match) {
                   throw new Error(
@@ -70,7 +79,7 @@ export function registerOpCheckRef(server: McpServer): void {
                   field: {
                     id: match.id,
                     title: match.title,
-                    type: match.fieldType ?? match.type,
+                    type: match.fieldType ?? ("type" in match ? match.type : undefined),
                     section: match.sectionId,
                   },
                 });

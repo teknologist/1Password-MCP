@@ -32,15 +32,16 @@ export function registerAllPrompts(server: McpServer): void {
                         ``,
                         `Please help me create a ${passwordStyle === "memorable" ? "memorable passphrase" : "strong random password"} with these steps:`,
                         ``,
-                        `1. Use the \`password_generate${passwordStyle === "memorable" ? "_memorable" : ""}\` tool to create the password.`,
+                        `1. If I want to store it, use \`vault_list\` to select the vault, then call \`password_create\` with \`generate: { style: "${passwordStyle}" }\` and \`returnSecret: false\`. Generate and store in one server call; omit \`password\`.`,
                         passwordStyle === "random"
                           ? `   - Use at least 20 characters with uppercase, numbers, and symbols.`
-                          : `   - Use at least 4 words for good entropy.`,
-                        `2. If I want to store it, use \`vault_list\` to show available vaults.`,
-                        `3. Then use \`password_create\` to save it securely in 1Password.`,
-                        `4. Provide the \`op://\` secret reference so I can use it in my configuration.`,
+                          : `   - Use 7 words from the 402-word dictionary with default number and symbol suffixes (about 70.2 bits with distinct word boundaries; words alone provide about 60.6 bits). Fixed capitalization and separators add no entropy.`,
+                        `2. If present, return the tool's ID-based \`secretReference\` so I can use it in my configuration. If a successful write returns a \`warning\` without a reference, report the warning. Do not retry the write; inspect item metadata with \`item_get\` and \`reveal: false\`.`,
+                        `   - SDK failures return fixed safe messages. Check item metadata before retrying because the write outcome may be unknown.`,
+                        `3. Only if I request generation without storage, use \`password_generate${passwordStyle === "memorable" ? "_memorable" : ""}\`; its result contains the plaintext password.`,
+                        `4. Do not claim storage succeeds unless the create call succeeds.`,
                         ``,
-                        `Important: Do NOT display the raw password in your response unless I explicitly ask. Instead, confirm it was generated and stored, and provide the secret reference.`,
+                        `Important: Do NOT display the raw password in your response unless I explicitly ask. Confirm storage only after a successful call. Provide the reference only when the tool returns one.`,
                       ].join("\n"),
                     },
                   },
@@ -75,11 +76,11 @@ export function registerAllPrompts(server: McpServer): void {
                           ? `1. Use \`vault_list\` to show my vaults, then \`item_lookup\` to find the item.\n`
                           : "",
                         `${hasTarget ? "1" : "2"}. Use \`password_read\` to verify access to the current credential (with \`reveal: false\` for safety).`,
-                        `${hasTarget ? "2" : "3"}. Use \`password_generate\` to create a new strong password.`,
-                        `${hasTarget ? "3" : "4"}. Use \`password_update\` to save the new password to 1Password.`,
-                        `${hasTarget ? "4" : "5"}. Confirm the rotation was successful and provide the updated \`op://\` reference.`,
+                        `${hasTarget ? "2" : "3"}. Call \`password_update\` with \`generate: { style: "random" }\` and \`returnSecret: false\`; omit \`newPassword\`. This generates and stores in one server call.`,
+                        `${hasTarget ? "3" : "4"}. If storage succeeds and a reference is present, return the tool's ID-based \`secretReference\`. If the successful write returns a \`warning\` without a reference, report it. Do not retry the write; inspect item metadata with \`item_get\` and \`reveal: false\`.`,
+                        `SDK failures return fixed safe messages. Check item metadata before retrying because the write outcome may be unknown.`,
                         ``,
-                        `Important: After rotation, remind me to update the password wherever it's used (services, configs, etc.).`,
+                        `Important: This updates 1Password only. It does not rotate the external service credential atomically. Coordinate the external service change separately with my approval; use op_run with the reference rather than revealing the value.`,
                       ]
                         .filter(Boolean)
                         .join("\n"),
@@ -108,7 +109,7 @@ export function registerAllPrompts(server: McpServer): void {
                         !vaultId
                           ? `1. Use \`vault_list\` to show all accessible vaults and ask which one to audit.\n`
                           : "",
-                        `${!vaultId ? "2" : "1"}. Use \`item_lookup\` to list all items in the vault (no query filter, high limit).`,
+                        `${!vaultId ? "2" : "1"}. Use \`item_lookup\` with \`pageSize: 50\`. Follow each \`nextCursor\` as \`cursor\` with the same vault and filters until it is null. Pages bound response size, not SDK fetch cost; vault changes can skip or repeat items.`,
                         `${!vaultId ? "3" : "2"}. Summarize the findings:`,
                         `   - Total number of items`,
                         `   - Breakdown by category (Login, Password, etc.)`,
@@ -159,8 +160,8 @@ export function registerAllPrompts(server: McpServer): void {
                         `Steps:`,
                         `1. Use \`vault_list\` to find the vault${vaultName ? ` matching "${vaultName}"` : ""}.`,
                         `2. Use \`item_lookup\` with the vault ID${itemName ? ` and query "${itemName}"` : ""} to find the item.`,
-                        `3. Use \`password_read\` with \`reveal: false\` to inspect available fields.`,
-                        `4. Construct the \`op://vault-name/item-name/field\` reference and present it.`,
+                        `3. Use \`item_get\` with \`reveal: false\` to inspect field IDs, titles, and section IDs. Use only this metadata; do not display values or notes.`,
+                        `4. Construct an ID-based \`op://vaultId/itemId/fieldId\` reference (include \`sectionId\` before \`fieldId\` when present), then validate it with \`op_check_ref\` and present it.`,
                         ``,
                         `The final reference should be ready to paste into my configuration files.`,
                       ].join("\n"),

@@ -48,8 +48,8 @@ Grouped the way agents and humans actually use them.
 | Tool | What it does |
 |------|----------------|
 | `vault_list` | List vaults the service account can access (id, name, description, type), limited to the allow-list if one is set. |
-| `item_lookup` | Search a vault by title substring; optional `limit` (max 200). |
-| `item_list` | List every item in a vault (id, title, category, tags, `updatedAt`) — never secrets. |
+| `item_lookup` | Search by title substring and optional exact `tag`; supports `limit` (max 200), `pageSize`, and `cursor`. |
+| `item_list` | List metadata (id, title, category, tags, `updatedAt`), with optional exact `tag`, `pageSize`, and `cursor`. Never returns secret values. |
 
 #### Read (safe by default)
 
@@ -57,18 +57,61 @@ Grouped the way agents and humans actually use them.
 |------|----------------|
 | `item_get` | Full item: title, category, tags, notes, fields. Secret-bearing values (passwords and other concealed fields, SSH private keys, OTP seeds, card numbers) stay hidden unless `reveal: true`; only known non-secret field types are shown. **Notes are returned as-is.** Accepts `op://…` **or** `vaultId` + `itemId`. |
 | `password_read` | Read one field (default `password`) via `op://…` or ids. **Metadata-only unless `reveal: true`.** Prefer `op_run` to *use* a secret. |
-| `op_check_ref` | Validate `op://vault/item/field` and return non-secret metadata only (vault, item, field). Never the value. |
+| `op_check_ref` | Validate `op://vault/item/field` or `op://vault/item/section/field` and return non-secret metadata only (vault, item, field). Never the value. |
 
 #### Create & update
 
 | Tool | What it does |
 |------|----------------|
-| `password_create` | Create a Login or Password item (username, URL, tags, notes). `returnSecret` defaults to `false`. |
+| `password_create` | Create a Login or Password item. Supply exactly one `password` or `generate` object. Returns an ID-based `secretReference` when saved metadata permits, or a successful write with a warning and no reference; `returnSecret` defaults to `false`. |
 | `note_create` | Create a Secure Note with optional tags and custom fields. |
-| `password_update` | Rotate a password / concealed field (creates the field if missing). |
-| `item_edit` | Update title, notes (empty string clears), tags, URL; upsert or remove fields. Unreferenced fields stay untouched. |
+| `password_update` | Supply exactly one `newPassword` or `generate` object. Updates or creates a password field. Returns an ID-based `secretReference` when saved metadata permits, or a successful write with a warning and no reference. Converts the selected field to `Concealed`. |
+| `item_edit` | Update title, notes (empty string clears), tags, and the first website URL; update, create, or remove fields. Preserves other website properties, secondary websites, and unrelated fields. |
 | `password_generate` | Cryptographically secure random password (length 8–128; symbols/numbers/uppercase toggles). |
-| `password_generate_memorable` | Memorable passphrase from a ~500-word list (word count, separator, number/symbol suffixes). |
+| `password_generate_memorable` | Passphrase from 402 distinct words. Defaults to seven words, `-` separators, capitalized words, and random number/symbol suffixes. Returns the password and an entropy estimate. |
+
+#### Generate and store without returning the value
+
+Use one server call to generate and store a password:
+
+```json
+{
+  "vaultId": "vault-id",
+  "title": "Example login",
+  "generate": { "style": "memorable" }
+}
+```
+
+Pass this input to `password_create`. For `password_update`, replace `title` with `itemId` and optionally specify `field`. Omit `password` / `newPassword` when you supply `generate`. Both tools validate exactly one explicit value or generation request before SDK access. Keep `returnSecret: false` (the default). When saved metadata permits, both tools return `secretReference` as `op://vaultId/itemId/fieldId`, or `op://vaultId/itemId/sectionId/fieldId` for a field in a section. IDs come from the saved SDK response. These references have not been live-resolved in this change.
+
+If a write succeeds but saved metadata is incomplete or ambiguous, the response remains successful. It includes item metadata and a fixed `warning`, but no `secretReference`: "Password saved, but no reliable secret reference is available from the SDK response. Do not retry the write; inspect item metadata." Use `item_get` with `reveal: false` to inspect field and section metadata. Do not repeat the write to obtain a reference. `returnSecret: true` remains the only way to include the password.
+
+`op_check_ref` checks a supplied section before it selects the field, so identical field IDs in different sections cannot select the wrong section. Names and IDs retain case-insensitive matching, with exact IDs first; ambiguous matches fail. References require three or four nonempty path segments. Parsing keeps percent-encoded text and query text literal; it does not decode them or add query handling. The SDK receives the original reference unchanged.
+
+Generation options use the same defaults as the standalone tools:
+
+- `style: "random"`: `length` (8–128, default 20), `includeSymbols`, `includeNumbers`, and `includeUppercase` (all default `true`).
+- `style: "memorable"`: `wordCount` (2–10, default 7), `separator` (0–5 characters, default `-`), `includeNumber`, `includeSymbol`, and `capitalize` (all default `true`).
+
+Seven independently selected words provide approximately 60.6 bits. The random number (0–99) and eight-symbol suffix increase the default estimate to approximately 70.2 bits. Fixed capitalization and separators add no entropy. The estimate uses the actual deduplicated dictionary length (402 words from 420 raw entries). Standalone memorable generation returns `dictionarySize` and `entropyBits`. For an empty or alphabetic-only separator, it returns `samplingEntropyBits` and an upper-bound explanation instead of claiming exact output entropy. Explicit options, including shorter passphrases, remain available.
+
+Generate-and-store updates 1Password only. It does not rotate an external service credential atomically. SDK failures do not trigger a second write. `password_create`, `password_update`, and `item_edit` log and return fixed operation-specific messages, never the SDK exception's message, stack, cause, or raw properties. The message states that the write outcome may be unknown; check item metadata before retrying. Local exactly-one, field-ambiguity, and conflicting-field-operation diagnostics remain available. Vault verification failures return a safe denial-or-verification-failure message without the SDK exception. `op_run` output redaction remains best effort.
+
+#### Field selection and website updates
+
+`item_edit` and `password_update` select an exact field ID first, then a unique case-insensitive ID, then a unique case-insensitive title. `password_update` also supports legacy labels. Ambiguous matches return candidate IDs and section IDs without values; select a unique field ID or title. If one ID occurs in multiple sections, use a unique title. `password_update` retains the selected section and ID through the single write and matches that exact identity in the saved response. `item_edit` resolves all operations against the original fields. It rejects repeated updates and remove/update combinations for the same field. Missing update targets still create fields.
+
+**Security change:** `password_update` changes the selected field type to `Concealed`, even if it was a text field. It preserves the field's ID, section, title, and other properties. Both update tools preserve the fetched item version. A live test with SDK `0.3.1` on 2026-10-30 confirms that a stale-version write is rejected and the newer write remains intact. This is observed SDK behavior, not an additional server-side concurrency guarantee. Failed writes are not retried.
+
+When `item_edit` receives `url`, it changes only the first website entry's URL. It preserves that entry's label and autofill behavior, all secondary entries, and order. If no entry exists, it adds one. If you omit `url`, websites remain unchanged. “First” does not mean a verified SDK primary designation.
+
+#### Bounded metadata pages
+
+For `item_list` or `item_lookup`, set `pageSize` (1–200). A page returns `items`, `count` for that page, and `nextCursor` (`null` on the final page). Pass a non-null `nextCursor` as `cursor` for the next call. If you supply only `cursor`, the page size defaults to 50. Keep the same tool, vault, query, tag, and lookup limit. Cursors are opaque, validated, and valid only in the current server process. Invalid, changed-filter, or out-of-range cursors return an error.
+
+Pages sort by title, then ID. Tag matching is exact and case-sensitive. Lookup query matching remains case-insensitive. Lookup `limit` caps the complete filtered result across pages. Without `pageSize` or `cursor`, both tools preserve the previous response shape and SDK order, including lookup's existing local limit behavior.
+
+Pagination and tag filtering run locally on typed SDK list metadata. They reduce response size, not SDK fetch cost. They do not fetch full items for tags. Vault changes between calls can cause skipped or repeated items; pages are not a snapshot. Only explicitly allowed metadata properties enter responses.
 
 #### Use secrets without revealing them
 
@@ -88,7 +131,7 @@ Grouped the way agents and humans actually use them.
 | Prompt | When to use it |
 |--------|----------------|
 | `generate-secure-password` | Generate (random or memorable) and optionally store — without dumping the password into chat. |
-| `credential-rotation` | Find → verify access → generate → update → confirm `op://` reference. |
+| `credential-rotation` | Find, verify access, generate/store with `password_update`, and return its reference. Coordinate the external service change separately. |
 | `vault-audit` | Inventory a vault by category; flag duplicates / oddities — never reveal secrets. |
 | `secret-reference-helper` | Build a paste-ready `op://vault/item/field` from names. |
 
@@ -223,7 +266,7 @@ Follow this order every time:
 2. **Confirm a reference** with `op_check_ref` — never `reveal` just to see if a path exists.
 3. **Use** a secret in a command or API call with **`op_run`** and `op://vault/item/field` in `env`.
 4. **Reveal** with `password_read` / `item_get` + `reveal: true` only when the human explicitly needs the value in chat.
-5. **Rotate** with `password_generate` → `password_update` (keep `returnSecret: false` unless asked).
+5. **Generate and store** with `password_create` or `password_update` plus `generate` (keep `returnSecret: false` unless asked). Use the returned `secretReference` when present. If the tool returns a successful write with a warning and no reference, inspect metadata instead of repeating the write. Coordinate external credential changes separately.
 6. Prefer **`item_archive`** over **`item_delete`** unless permanent removal is required.
 
 ### `op_run` sketch

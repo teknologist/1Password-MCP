@@ -18,13 +18,14 @@ import { getClient } from "../client.js";
 import { log, logError } from "../logger.js";
 import { jsonResult, errorResult } from "../utils.js";
 import { assertVaultIdAllowed } from "../vault-access.js";
+import { selectFieldIndex } from "../field-selection.js";
 
 /** A field upsert request from the caller. */
 const fieldInput = z.object({
   idOrTitle: z
     .string()
     .min(1)
-    .describe("Field id or title to match (case-insensitive). Created if absent."),
+    .describe("Select an exact ID, then a unique case-insensitive ID or title. Ambiguous matches fail; absent targets are created."),
   type: z
     .enum(["text", "concealed"])
     .describe("Field type: 'text' for plain values, 'concealed' for secrets."),
@@ -34,15 +35,6 @@ const fieldInput = z.object({
     .optional()
     .describe("Optional section id to associate the field with."),
 });
-
-/** Does a field match the caller-supplied id-or-title? */
-function fieldMatches(field: ItemField, idOrTitle: string): boolean {
-  const target = idOrTitle.toLowerCase();
-  return (
-    field.id?.toLowerCase() === target ||
-    field.title?.toLowerCase() === target
-  );
-}
 
 export function registerItemEdit(server: McpServer): void {
   server.registerTool("item_edit", { description: "Edit an existing 1Password item. Update the title, notes (pass an empty string to clear notes), tags, website URL, upsert fields, or remove fields. Only referenced fields are changed; all others are preserved.", inputSchema: z.object({
@@ -63,7 +55,7 @@ export function registerItemEdit(server: McpServer): void {
                 .string()
                 .url()
                 .optional()
-                .describe("Replacement primary website URL for the item."),
+                .describe("Replacement URL for the first website; preserves its metadata and all other websites."),
               fields: z
                 .array(fieldInput)
                 .optional()
@@ -71,7 +63,7 @@ export function registerItemEdit(server: McpServer): void {
               removeFields: z
                 .array(z.string().min(1))
                 .optional()
-                .describe("Field ids or titles to remove from the item."),
+                .describe("Field IDs or unique titles to remove. IDs take priority; ambiguous matches fail before a write."),
             }) }, async ({ vaultId, itemId, title, notes, tags, url, fields, removeFields }) => {
               try {
                 // NOTE: field values are intentionally excluded from logs.
@@ -87,40 +79,45 @@ export function registerItemEdit(server: McpServer): void {
                 });
 
                 const client = await getClient();
-                await assertVaultIdAllowed(client, vaultId);
+                try {
+                  await assertVaultIdAllowed(client, vaultId);
+                } catch {
+                  const safeError = new Error(`Vault '${vaultId}' is not in the allowed vault list, or vault access verification failed.`);
+                  logError("item_edit failed.", safeError);
+                  return errorResult(safeError);
+                }
                 if (!client?.items?.get) {
-                  throw new Error(
-                    "Your @1password/sdk version does not support getting items.",
-                  );
+                  return errorResult(new Error("Your @1password/sdk version does not support getting items."));
                 }
                 if (!client?.items?.put) {
-                  throw new Error(
-                    "Your @1password/sdk version does not support updating items.",
-                  );
+                  return errorResult(new Error("Your @1password/sdk version does not support updating items."));
                 }
 
                 const existing: Item = await client.items.get(vaultId, itemId);
 
-                // Build the next field list immutably, preserving unreferenced fields.
-                const removeSet = new Set(
-                  (removeFields ?? []).map((value) => value.toLowerCase()),
-                );
-
-                let nextFields: ItemField[] = (existing.fields ?? []).filter(
-                  (field) =>
-                    !removeSet.has(field.id?.toLowerCase()) &&
-                    !removeSet.has(field.title?.toLowerCase()),
-                );
-
-                for (const upsert of fields ?? []) {
+                const originalFields = existing.fields ?? [];
+                let removeSet: Set<number>;
+                let upserts: { upsert: z.infer<typeof fieldInput>; index: number }[];
+                try {
+                  removeSet = new Set((removeFields ?? []).map((target) => selectFieldIndex(originalFields, target)));
+                  upserts = (fields ?? []).map((upsert) => ({ upsert, index: selectFieldIndex(originalFields, upsert.idOrTitle) }));
+                  const targets = new Set<string>();
+                  for (const { upsert, index } of upserts) {
+                    const key = index >= 0 ? `index:${index}` : `new:${upsert.idOrTitle.toLowerCase()}`;
+                    if (targets.has(key) || (index >= 0 && removeSet.has(index))) {
+                      throw new Error("Conflicting field operations. Select each field only once.");
+                    }
+                    targets.add(key);
+                  }
+                } catch (error) {
+                  return errorResult(error);
+                }
+                let nextFields: ItemField[] = [...originalFields];
+                for (const { upsert, index } of upserts) {
                   const fieldType =
                     upsert.type === "concealed"
                       ? ItemFieldType.Concealed
                       : ItemFieldType.Text;
-                  const index = nextFields.findIndex((field) =>
-                    fieldMatches(field, upsert.idOrTitle),
-                  );
-
                   if (index >= 0) {
                     const current = nextFields[index];
                     const replacement: ItemField = {
@@ -146,15 +143,13 @@ export function registerItemEdit(server: McpServer): void {
                   }
                 }
 
+                nextFields = nextFields.filter((_, index) => !removeSet.has(index));
                 let nextWebsites: Website[] | undefined = existing.websites;
                 if (url !== undefined) {
-                  nextWebsites = [
-                    {
-                      url,
-                      label: "website",
-                      autofillBehavior: AutofillBehavior.AnywhereOnWebsite,
-                    },
-                  ];
+                  const [first, ...rest] = existing.websites ?? [];
+                  nextWebsites = first
+                    ? [{ ...first, url }, ...rest]
+                    : [{ url, label: "website", autofillBehavior: AutofillBehavior.AnywhereOnWebsite }];
                 }
 
                 const updated: Item = {
@@ -177,9 +172,10 @@ export function registerItemEdit(server: McpServer): void {
                   fieldCount: result.fields?.length ?? 0,
                   updatedAt: result.updatedAt,
                 });
-              } catch (error) {
-                logError("item_edit failed.", error);
-                return errorResult(error);
+              } catch {
+                const safeError = new Error("Item edit failed. Check item metadata before retrying; the write outcome may be unknown.");
+                logError("item_edit failed.", safeError);
+                return errorResult(safeError);
               }
             });
 }
