@@ -2,9 +2,9 @@
  * 1Password SDK client singleton.
  */
 
-import { createClient } from "@1password/sdk";
-import { getConfig } from "./config.js";
-import { log } from "./logger.js";
+import { createClient } from '@1password/sdk';
+import { getConfig } from './config.js';
+import { log } from './logger.js';
 
 type OnePasswordClient = Awaited<ReturnType<typeof createClient>>;
 
@@ -14,9 +14,9 @@ let clientPromise: Promise<OnePasswordClient> | undefined;
 export function requireServiceAccountToken(): string {
   const config = getConfig();
   if (!config.serviceAccountToken) {
-    log("error", "Missing service account token.");
+    log('error', 'Missing service account token.');
     throw new Error(
-      "Service account token is required. Provide it via --service-account-token, OP_SERVICE_ACCOUNT_TOKEN, or macOS Keychain with OP_KEYCHAIN_SERVICE.",
+      'Service account token is required. Provide it via --service-account-token, OP_SERVICE_ACCOUNT_TOKEN, or macOS Keychain with OP_KEYCHAIN_SERVICE.'
     );
   }
   return config.serviceAccountToken;
@@ -25,13 +25,18 @@ export function requireServiceAccountToken(): string {
 /** Get (or lazily create) the 1Password SDK client. */
 export async function getClient(): Promise<OnePasswordClient> {
   if (!clientPromise) {
-    log("debug", "Initializing 1Password client.");
+    log('debug', 'Initializing 1Password client.');
     const token = requireServiceAccountToken();
     const config = getConfig();
     clientPromise = createClient({
       auth: token,
       integrationName: config.integrationName,
       integrationVersion: config.integrationVersion,
+    }).catch((error: unknown) => {
+      // Don't cache a failed init (e.g. a transient network error), so the
+      // next tool call retries instead of failing until the server restarts.
+      clientPromise = undefined;
+      throw error;
     });
   }
   return clientPromise;
